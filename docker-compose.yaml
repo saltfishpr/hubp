@@ -1,0 +1,20 @@
+services:
+  hubp:
+    build: .
+    restart: unless-stopped
+    environment:
+      DOCKER_HUB_HTTPS_PROXY: ${DOCKER_HUB_HTTPS_PROXY:-}
+      DOCKER_HUB_USERNAME: ${DOCKER_HUB_USERNAME:-}
+      DOCKER_HUB_TOKEN: ${DOCKER_HUB_TOKEN:-}
+      GHCR_USERNAME: ${GHCR_USERNAME:-}
+      GHCR_TOKEN: ${GHCR_TOKEN:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.json:/etc/hubp/config.json:ro
+      - hubp-cache:/var/lib/hubp/cache
+
+volumes:
+  hubp-cache:
+  caddy-data:
+  caddy-config:

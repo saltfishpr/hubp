@@ -1,0 +1,45 @@
+{
+  "server": {
+    "listen": ":8080",
+    "public_url": "https://your-domain.com",
+    "read_header_timeout": "10s",
+    "idle_timeout": "120s",
+    "shutdown_timeout": "15s"
+  },
+  "cache": {
+    "enabled": true,
+    "dir": "/var/lib/hubp/cache",
+    "manifest_ttl": "5m"
+  },
+  "registries": [
+    {
+      "name": "dockerhub",
+      "path_prefix": "",
+      "upstream": "https://registry-1.docker.io",
+      "allowed_auth_hosts": ["auth.docker.io"],
+      "https_proxy": "${DOCKER_HUB_HTTPS_PROXY}",
+      "username": "${DOCKER_HUB_USERNAME}",
+      "password": "${DOCKER_HUB_TOKEN}"
+    },
+    {
+      "name": "ghcr",
+      "path_prefix": "ghcr.io",
+      "upstream": "https://ghcr.io",
+      "allowed_auth_hosts": ["ghcr.io"],
+      "username": "${GHCR_USERNAME}",
+      "password": "${GHCR_TOKEN}"
+    },
+    {
+      "name": "quay",
+      "path_prefix": "quay.io",
+      "upstream": "https://quay.io",
+      "allowed_auth_hosts": ["quay.io"]
+    },
+    {
+      "name": "gcr",
+      "path_prefix": "gcr.io",
+      "upstream": "https://gcr.io",
+      "allowed_auth_hosts": ["gcr.io"]
+    }
+  ]
+}

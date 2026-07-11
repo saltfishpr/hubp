@@ -1,0 +1,6 @@
+.git
+.idea
+.vscode
+data
+*.log
+config.json
