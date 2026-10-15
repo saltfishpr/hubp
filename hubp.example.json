@@ -1,0 +1,52 @@
+{
+  "listen": "0.0.0.0:8080",
+  "public_scheme": "https",
+  "routes": [
+    {
+      "domain": "hubp.example.com",
+      "kind": "github",
+      "upstream": "https://github.com"
+    },
+    {
+      "domain": "hf.hubp.example.com",
+      "kind": "huggingface",
+      "upstream": "https://huggingface.co"
+    },
+    {
+      "domain": "docker.hubp.example.com",
+      "kind": "registry",
+      "upstream": "https://registry-1.docker.io"
+    },
+    {
+      "domain": "ghcr.hubp.example.com",
+      "kind": "registry",
+      "upstream": "https://ghcr.io"
+    },
+    {
+      "domain": "gcr.hubp.example.com",
+      "kind": "registry",
+      "upstream": "https://gcr.io"
+    },
+    {
+      "domain": "quay.hubp.example.com",
+      "kind": "registry",
+      "upstream": "https://quay.io"
+    },
+    {
+      "domain": "k8s.hubp.example.com",
+      "kind": "registry",
+      "upstream": "https://registry.k8s.io"
+    }
+  ],
+  "header_timeout_seconds": 30,
+  "stall_timeout_seconds": 120,
+  "max_upstream_requests": 128,
+  "cache": {
+    "enabled": false,
+    "dir": "/data",
+    "max_bytes": 10737418240,
+    "max_object_bytes": 5368709120,
+    "min_free_bytes": 67108864,
+    "ttl_seconds": 300
+  }
+}

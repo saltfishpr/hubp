@@ -1,170 +1,90 @@
 # hubp
 
-一个使用 Go 编写的、只读的 Docker/OCI Registry V2 拉取代理。它把多个上游 Registry 映射到同一个域名，并在本地磁盘缓存 manifest 与 blob。
+Go 编写的开发者资源反向代理 MVP：GitHub、OCI/Docker Registry、Hugging Face。
 
-## 路径映射
+单进程、单 HTTP 监听器、静态 JSON 配置。三个协议实现位于 `internal/adapters/`。没有 `policy`、`admin`、`observability` 模块。
 
-| Docker 命令                                                         | 上游                                 |
-| ------------------------------------------------------------------- | ------------------------------------ |
-| `docker pull your-domain.com/library/alpine`                        | Docker Hub `library/alpine`          |
-| `docker pull your-domain.com/ghcr.io/oopsunix/hubp:latest`          | GHCR `oopsunix/hubp:latest`          |
-| `docker pull your-domain.com/quay.io/coreos/etcd:latest`            | Quay `coreos/etcd:latest`            |
-| `docker pull your-domain.com/gcr.io/google-containers/pause:latest` | GCR `google-containers/pause:latest` |
+## 当前支持
 
-## 特性
+| 来源         | 能力                                                                                                                        |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| GitHub       | Raw、Release 附件、Archive，HTTPS Smart HTTP v0/v2 clone/fetch                                                              |
+| Registry     | Docker Hub、GHCR、GCR、Quay、registry.k8s.io；公共镜像拉取，index/manifest/blob、GET/HEAD、Range、匿名 token 自动交换与刷新 |
+| Hugging Face | 公共模型/数据集的仓库 API、tree、resolve、HEAD、HTTP 文件下载和 Range；分页链接留在代理域名                                 |
+| 缓存         | 可选 SQLite + 磁盘完整对象缓存；长度/digest 校验、临时文件原子提交、条件验证、完整对象单范围、容量淘汰、重启恢复            |
 
-- 支持 Docker Registry HTTP API V2 的拉取流程。
-- 自动重写上游 `WWW-Authenticate` Bearer challenge，token 也通过本服务获取。
-- 每个上游可独立配置 HTTPS 代理；Docker Hub 的 Registry 请求、token 请求和重定向下载都会使用该代理。
-- 磁盘缓存 blob 和 manifest。
-- blob 与 digest manifest 作为不可变对象永久缓存；tag manifest 按 TTL 刷新。
-- 相同缓存键的并发未命中请求只回源一次。
-- 支持 `GET`、`HEAD` 和缓存命中后的 Range 请求。
-- pull-only：拒绝 push、delete 和 blob upload。
-- JSON 配置，支持 `${ENV_NAME}` 环境变量替换。
-- 仅使用 Go 标准库解析配置，未知字段会导致启动失败。
+只读公共资源。原生 Xet、Git LFS 对象、submodule 自动改写、私有/gated 资源、分块缓存、多实例共享目录暂不支持。冷缓存 `206` 和多范围响应直通，不作为完整对象缓存。
 
-## 快速启动
+## 快速运行
+
+源码要求 Go 1.26 或以上；附带的 `bin/hubp` 为 Linux/amd64 可执行文件。
 
 ```bash
-cp config.example.json config.json
-cat > .env <<'ENV'
-DOMAIN=your-domain.com
-DOCKER_HUB_HTTPS_PROXY=http://host.docker.internal:7890
-# 可选：匿名拉取不需要填写
-DOCKER_HUB_USERNAME=
-DOCKER_HUB_TOKEN=
-GHCR_USERNAME=
-GHCR_TOKEN=
-ENV
-
-docker compose up -d --build
+go build -trimpath -buildvcs=false -o bin/hubp ./cmd/hubp
+./bin/hubp
 ```
 
-Caddy 会为 `DOMAIN` 自动申请 HTTPS 证书。域名的 A/AAAA 记录必须指向该服务器，并开放 80、443 端口。
-
-健康检查：
+默认监听 `127.0.0.1:8080`，缓存关闭，可直接测试：
 
 ```bash
-curl https://your-domain.com/-/healthz
-curl -I https://your-domain.com/v2/
+curl http://localhost:8080/https://raw.githubusercontent.com/octocat/Hello-World/master/README
+git clone http://localhost:8080/https://github.com/octocat/Hello-World.git
 ```
 
-拉取测试：
+HF 使用独立 Host。本机测试可以使用下面配置示例中的两条 `routes`：GitHub 对应 `localhost`，HF 对应 `127.0.0.1`。然后启动：
 
 ```bash
-docker pull your-domain.com/library/alpine:latest
-docker pull your-domain.com/ghcr.io/oopsunix/hubp:latest
-docker pull your-domain.com/quay.io/coreos/etcd:latest
-docker pull your-domain.com/gcr.io/google-containers/pause:latest
+./bin/hubp -config hubp.json
+HF_ENDPOINT=http://127.0.0.1:8080 \
+HF_HUB_DISABLE_XET=1 \
+HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
+hf download hf-internal-testing/tiny-random-bert config.json pytorch_model.bin
 ```
 
-## JSON 配置
+HF 模式必须禁用 Xet。已经登录过 HF 的客户端还应禁用隐式 token；MVP 不向上游转发个人凭据。初始客户端验证版本为 `huggingface_hub==2.2.0`、`hf-xet==1.7.0`。协议级 Range 支持不等于保证每个版本的 CLI 在进程退出后保留临时文件。
 
-配置文件默认为 `config.json`。duration 字段使用 Go duration 字符串，例如 `10s`、`5m`、`2h30m`。配置加载时会先展开字符串中的 `${ENV_NAME}`，再进行严格 JSON 解码。
+## 配置
 
-完整示例见 [`config.example.json`](./config.example.json)：
+以 `hubp.example.json` 为生产域名配置示例。JSON 仅包含需要覆盖的字段也可以；`routes` 一旦提供就完整替换默认路由，`[]` 可关闭所有入口。未知配置字段会拒绝启动。
+
+旧的 `github_hosts`、`hf_hosts`、`registries` 配置字段已移除。迁移时将每个域名转换为一条 route，并填写对应的 kind 和 upstream。
 
 ```json
 {
-  "server": {
-    "listen": ":8080",
-    "public_url": "https://your-domain.com",
-    "read_header_timeout": "10s",
-    "idle_timeout": "120s",
-    "shutdown_timeout": "15s"
-  },
-  "cache": {
-    "enabled": true,
-    "dir": "/var/lib/hubp/cache",
-    "manifest_ttl": "5m"
-  },
-  "registries": [
-    {
-      "name": "dockerhub",
-      "path_prefix": "",
-      "upstream": "https://registry-1.docker.io",
-      "allowed_auth_hosts": ["auth.docker.io"],
-      "https_proxy": "${DOCKER_HUB_HTTPS_PROXY}"
-    }
-  ]
+  "listen": "127.0.0.1:8080",
+  "public_scheme": "http",
+  "routes": [
+    {"domain": "localhost", "kind": "github", "upstream": "https://github.com"},
+    {"domain": "127.0.0.1", "kind": "huggingface", "upstream": "https://huggingface.co"}
+  ],
+  "cache": {"enabled": false}
 }
 ```
 
-未填写的字段会使用以下默认值：
+`domain` 为不带端口的小写域名或本机 IPv4 地址；同一域名只能绑定一条路由。`kind` 为 `github`、`registry` 或 `huggingface`。`upstream` 为该适配器支持的 HTTPS origin，不带路径前缀、凭据或查询参数。GitHub 保留完整 URL 前缀用法，Raw/codeload 由适配器处理。相同 kind/upstream 的多个域名复用同一个适配器实例。
 
-- `server.listen`: `:8080`
-- `server.read_header_timeout`: `10s`
-- `server.idle_timeout`: `120s`
-- `server.shutdown_timeout`: `15s`
-- `cache.enabled`: `false`
+监听器按 Host 分发，配置中不带端口。GitHub 前缀 URL 不经过通用 ServeMux 的路径清理，保留 `https://`、编码路径和原始查询参数。
 
-JSON 不支持注释。配置中出现未知字段、非法 duration、多个顶层 JSON 值或不合法的 Registry 配置时，服务会拒绝启动。
+| 字段                     | 默认/含义                                                                   |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `listen`                 | `127.0.0.1:8080`                                                            |
+| `public_scheme`          | `http`；外层 TLS 终止时明确设为 `https`，用于 HF 本地链接和 commit 固定地址 |
+| `routes`                 | 统一路由列表，每项包含 `domain`、`kind`、`upstream`                         |
+| `upstream_proxy`         | 默认空；显式指定可信 HTTP(S) 出口代理                                       |
+| `header_timeout_seconds` | 30，上游响应头等待时间                                                      |
+| `stall_timeout_seconds`  | 120，上游读取或客户端写入停滞时间                                           |
+| `max_upstream_requests`  | 128，实际回源请求/响应流的资源上限；超出返回 503                            |
+| `cache.enabled`          | false，不初始化 SQLite 或数据目录                                           |
+| `cache.dir`              | `./data`，单实例独占                                                        |
+| `cache.max_bytes`        | 10 GiB，对象与临时填充的总预算                                              |
+| `cache.max_object_bytes` | 5 GiB；超过时停止本次缓存写入，下载继续                                     |
+| `cache.min_free_bytes`   | 64 MiB，最小剩余空间                                                        |
+| `cache.ttl_seconds`      | 300，可变资源缓存上限；上游更严格的约束优先                                 |
 
-## Docker Hub HTTPS 代理
-
-在 `config.json` 的 Docker Hub Registry 配置中设置：
-
-```json
-{
-  "name": "dockerhub",
-  "path_prefix": "",
-  "upstream": "https://registry-1.docker.io",
-  "allowed_auth_hosts": ["auth.docker.io"],
-  "https_proxy": "${DOCKER_HUB_HTTPS_PROXY}"
-}
-```
-
-支持常见形式：
-
-```dotenv
-DOCKER_HUB_HTTPS_PROXY=http://127.0.0.1:7890
-DOCKER_HUB_HTTPS_PROXY=http://username:password@proxy.example.com:3128
-DOCKER_HUB_HTTPS_PROXY=socks5://127.0.0.1:1080
-```
-
-若代理运行在宿主机而服务运行在 Docker 中，Linux 上通常应把宿主机网关显式加入 Compose，或把代理监听到容器可访问的地址；macOS/Windows Docker Desktop 可使用 `host.docker.internal`。
-
-## 缓存行为
-
-缓存目录结构是实现细节，勿直接修改。响应头可用于观察状态：
-
-- `X-Hubp-Cache: HIT`：磁盘命中。
-- `X-Hubp-Cache: MISS`：回源并成功写入缓存。
-- `X-Hubp-Cache: BYPASS`：HEAD、Range 未命中、鉴权错误或非缓存 API。
-- `X-Hubp-Cache: MISS-NOT-STORED`：回源成功，但缓存文件无法创建。
-
-当前版本不主动淘汰 blob。生产环境应监控缓存目录磁盘空间，并通过独立任务按需清理；清理整个缓存目录是安全的，后续拉取会重新回源。
-
-## 私有镜像
-
-可在对应 Registry 下配置静态用户名和 token/PAT：
-
-```json
-{
-  "username": "${GHCR_USERNAME}",
-  "password": "${GHCR_TOKEN}"
-}
-```
-
-服务会用该凭据向上游 token 服务换取 Bearer token，Docker 客户端再通过本代理使用该 token。因为缓存由所有代理客户端共享，包含私有镜像时必须把本服务部署在可信内网，或在前置网关增加访问控制。
-
-`forward_client_authorization: true` 可把客户端发给本代理 token 端点的 Authorization 头转发到上游，但默认关闭，避免把代理域名凭据错误发送给上游。
-
-## 安全注意事项
-
-- 务必配置 `server.public_url`，避免反向代理场景下根据不可信 Host 推断 token 地址。
-- `allowed_auth_hosts` 是 SSRF 防护边界；只加入对应 Registry 官方 token 主机。
-- `tls_insecure_skip_verify` 仅供测试，不应在生产环境开启。
-- 本服务不验证客户端身份。公开部署前应在 Caddy、Nginx、Cloudflare Access 或 VPN 层增加访问控制。
-- Docker 默认要求 Registry 使用可信 HTTPS。仅测试时才配置 insecure registry。
-
-## 本地构建与测试
+也可用 `HUBP_UPSTREAM_PROXY` 覆盖出口代理地址；不会自动继承通用 `HTTP_PROXY`/`HTTPS_PROXY`。例如：
 
 ```bash
-go test ./...
-go test -race ./...
-go vet ./...
-go build ./cmd/hubp
-./hubp -config ./config.json
+HUBP_UPSTREAM_PROXY=http://127.0.0.1:7890 ./bin/hubp -config hubp.json
 ```
+
+直连模式在拨号前解析并校验目标地址，连接到已校验地址。配置出口代理后，目标 IP 的访问约束由可信代理负责；hubp 仍检查初始目标、认证 realm 和每次重定向的服务域名。跨域跳转清除原 Authorization/Cookie，不提供任意 URL 中转接口。

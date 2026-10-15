@@ -3,122 +3,36 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 )
 
-func TestLoad(t *testing.T) {
-	t.Setenv("PROXY_URL", "http://127.0.0.1:7890")
-	t.Setenv("GHCR_USERNAME", `user"name`)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	data := `{
-  "server": {
-    "listen": ":9090",
-    "public_url": "https://mirror.example.com"
-  },
-  "cache": {
-    "enabled": true,
-    "dir": "` + filepath.ToSlash(filepath.Join(dir, "cache")) + `",
-    "manifest_ttl": "7m"
-  },
-  "registries": [
-    {
-      "name": "dockerhub",
-      "path_prefix": "",
-      "upstream": "https://registry-1.docker.io",
-      "https_proxy": "${PROXY_URL}",
-      "allowed_auth_hosts": ["auth.docker.io"]
-    },
-    {
-      "name": "ghcr",
-      "path_prefix": "ghcr.io",
-      "upstream": "https://ghcr.io",
-      "allowed_auth_hosts": ["ghcr.io"],
-      "username": "${GHCR_USERNAME}",
-      "password": "token"
-    }
-  ]
-}`
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+func TestLoadReplacesRoutesAndRejectsInvalidConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hubp.json")
+	if err := os.WriteFile(p, []byte(`{"routes":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	c, e := Load(p)
+	if e != nil {
+		t.Fatal(e)
 	}
-	if cfg.Server.Listen != ":9090" {
-		t.Fatalf("listen = %q", cfg.Server.Listen)
+	if len(c.Routes) != 0 {
+		t.Fatal("default routes retained after explicit empty list")
 	}
-	if got := cfg.Server.ReadHeaderTimeout.Value(); got != 10*time.Second {
-		t.Fatalf("default read header timeout = %s", got)
-	}
-	if got := cfg.Cache.ManifestTTL.Value(); got != 7*time.Minute {
-		t.Fatalf("manifest TTL = %s", got)
-	}
-	if got := cfg.Registries[0].HTTPSProxy; got != "http://127.0.0.1:7890" {
-		t.Fatalf("proxy = %q", got)
-	}
-	if got := cfg.Registries[1].AllowedAuthHosts; len(got) != 1 || got[0] != "ghcr.io" {
-		t.Fatalf("allowed auth hosts = %#v", got)
-	}
-	if got := cfg.Registries[1].Username; got != `user"name` {
-		t.Fatalf("username = %q", got)
+	for _, raw := range []string{`{"unknown_option":true}`, `{} {}`, `null`, `{"routes":[{"domain":"localhost","kind":"github","upstream":"https://github.com"},{"domain":"localhost","kind":"huggingface","upstream":"https://huggingface.co"}]}`, `{"routes":[{"domain":"private.local","kind":"registry","upstream":"https://127.0.0.1"}]}`, `{"github_hosts":["localhost"]}`, `{"hf_hosts":[]}`, `{"registries":{}}`, `{"upstream_proxy":"socks5://localhost:1234"}`} {
+		if e = os.WriteFile(p, []byte(raw), 0o600); e != nil {
+			t.Fatal(e)
+		}
+		if _, e = Load(p); e == nil {
+			t.Fatal("invalid config accepted", raw)
+		}
 	}
 }
 
-func TestLoadRejectsUnknownField(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{
-  "server": {"listen": ":8080", "typo": true},
-  "registries": [
-    {
-      "name": "dockerhub",
-      "path_prefix": "",
-      "upstream": "https://registry-1.docker.io"
-    }
-  ]
-}`
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-		t.Fatal(err)
+func TestDefaultsAndProxy(t *testing.T) {
+	if _, e := Load(""); e != nil {
+		t.Fatal(e)
 	}
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("Load() unexpectedly accepted an unknown field")
-	}
-	if !strings.Contains(err.Error(), "unknown field") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestLoadRejectsInvalidDuration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{
-  "cache": {"manifest_ttl": "soon"},
-  "registries": [
-    {
-      "name": "dockerhub",
-      "path_prefix": "",
-      "upstream": "https://registry-1.docker.io"
-    }
-  ]
-}`
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("Load() unexpectedly accepted an invalid duration")
-	}
-}
-
-func TestLoadRejectsTrailingJSON(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{"registries":[{"name":"dockerhub","path_prefix":"","upstream":"https://registry-1.docker.io"}]} {}`
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("Load() unexpectedly accepted trailing JSON")
+	if u, e := ProxyURL("http://user:secret@127.0.0.1:3128"); e != nil || u.Host != "127.0.0.1:3128" {
+		t.Fatal("trusted proxy config failed")
 	}
 }
